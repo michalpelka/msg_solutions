@@ -3,6 +3,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from scipy.linalg import expm, logm
+from scipy import interpolate
 def skew(a):
     return np.array (((0,    -a[2],   a[1]),
                      (a[2],   0  ,  -a[0]),
@@ -57,14 +58,16 @@ def calcErrPoint(I1, D1, I2, xi, K , u, v):
     fx = K[0][0]; fy= K[1][1]
     if D1[int(u)][int(v)] == 0:
         return 0
-    n1 = np.array([(u - cx) / fx,(v - cy) / fy, 1]) *  D1[int(u)][int(v)]
-    n2 = (np.identity(3) + skew (xi)) @ n1 + xi[3:]
-    n2n = n2 / n2[2]
-    up = int(round(fx * n2n[0] + cx))
-    vp = int(round(fy * n2n[1] + cy))
+    p3d_frame1 = np.array([(u - cx) / fx,(v - cy) / fy, 1]) *  D1[int(u)][int(v)]
+    p3d_frame2 = (np.identity(3) + skew (xi)) @ p3d_frame1 + xi[3:]
+    p3d_frame2 = p3d_frame2 / p3d_frame2[2]
+    up = (fx * p3d_frame2[0] + cx)
+    vp = (fy * p3d_frame2[1] + cy)
+
     if (up > 0 and up < I1.shape[0]):
         if (vp > 0 and vp < I1.shape[1]):
-            res = (I1[int(u)][int(v)]-I2[up][vp])
+            res = (I1[int(u)][int(v)]-I2(up,vp))
+            #res = I2(up,vp)
             return res*res
     # n1 = cv2.undistortPoints(np.array([(x,y)]), np.array(K), np.array([0.0]*4))
     # n11 = [(u - cx) / fx,(v - cy) / fy, 1]
@@ -74,14 +77,44 @@ def calcErrPoint(I1, D1, I2, xi, K , u, v):
     # X[0:3,0:3] = skew (xi[0:3])
     # n2 = X @ [n1[0],n1[1],n1[2],1]
     return 0
+
+def calcPoint(I1, D1, I2, xi, K , u, v):
+    cx = K[0][2]; cy= K[1][2]
+    fx = K[0][0]; fy= K[1][1]
+    if D1[int(u)][int(v)] == 0:
+        return 0
+    p3d_frame1 = np.array([(u - cx) / fx,(v - cy) / fy, 1]) *  D1[int(u)][int(v)]
+    p3d_frame2 = (np.identity(3) + skew (xi)) @ p3d_frame1 + xi[3:]
+    p3d_frame2 = p3d_frame2 / p3d_frame2[2]
+    up = (fx * p3d_frame2[0] + cx)
+    vp = (fy * p3d_frame2[1] + cy)
+
+    if (up > 0 and up < I1.shape[0]):
+        if (vp > 0 and vp < I1.shape[1]):
+            res = I2(up,vp)
+            #res = I2(up,vp)
+            return res
+    return 0  
+def calcP(I1, D1, I2, xi, K):
+    assert (I1.shape==I2.shape)
+    assert (I1.shape==D1.shape)
+    assert (len(xi)==6)
+    f_I2 = interpolate.interp2d(np.arange(0,I2.shape[0]), np.arange(0,I2.shape[1]), np.transpose(I2) )
+    res_img = np.zeros(I1.shape)
+    for u in range (0,I1.shape[0]):
+        for v in range (0,I2.shape[1]):
+            res_img[u][v]=calcPoint(I1, D1, f_I2, xi, K ,u, v)
+    return res_img
+
 def calcErr(I1, D1, I2, xi, K):
     assert (I1.shape==I2.shape)
     assert (I1.shape==D1.shape)
     assert (len(xi)==6)
+    f_I2 = interpolate.interp2d(np.arange(0,I2.shape[0]), np.arange(0,I2.shape[1]), np.transpose(I2) )
     res_img = np.zeros(I1.shape)
     for u in range (0,I1.shape[0]):
         for v in range (0,I2.shape[1]):
-            res_img[u][v]=calcErrPoint(I1, D1, I2, xi, K , u,v)
+            res_img[u][v]=calcErrPoint(I1, D1, f_I2, xi, K , u,v)
     return res_img
 
 def deriveNumeric(I1, D1, I2, xi, K):
@@ -89,16 +122,19 @@ def deriveNumeric(I1, D1, I2, xi, K):
     J = []
     for i in range (0,6):
         e = [0] * 6
-        EPS = 10e-4
+        EPS = 10e-8
         e[i] = EPS
         xi2 = se3log (se3exp(e) @ se3exp(xi))
+        #print (xi2, xi)
         err2 = calcErr(I1,D1,I2, xi2, K)
         err1 = calcErr(I1,D1,I2, xi, K)
         d = (err2-err1) / EPS
-        plt.subplot(2,3,i+1)
-        plt.imshow(d)
+        # plt.subplot(2,3,i+1)
+        # plt.imshow(err2)
+        # plt.colorbar()
         J.append(d.reshape(-1))
-    plt.show()
+
+    # plt.show()
     return np.transpose(np.stack(J))
 
 K = [[517.3, 0, 318.6],	[0, 516.5, 255.3,], [0, 0, 1]]
@@ -127,15 +163,38 @@ d1 = cv2.imread('depth/1305031102.262886.png', cv2.IMREAD_UNCHANGED)/5000
 # result:
 #  approximately -0.2894 0.0097 -0.0439  0.0039 0.0959 0.0423
 
-[Id1,Dd1,Kd1] = downscale ( c1, d1, K)
-[Id1,Dd1,Kd1] = downscale ( Id1, Dd1, Kd1)
+PYRAMID_LEVELS = 4
 
-[Id2,Dd2,Kd2] = downscale ( c2, d2, K)
-[Id2,Dd2,Kd2] = downscale ( Id2, Dd2, Kd2)
+pyr1 = [[c1, d1, K]]
+pyr2 = [[c2, d2, K]]
 
-#res_img = calcErr(Id1, Dd1, Id2, [0,0,0,0,0,0], K)
-J = deriveNumeric(Id1, Dd1, Id2, [0,0,0,0,0,0], K)
+for i in range (PYRAMID_LEVELS):
+    pyr1.append(downscale ( *pyr1[-1] ))
+    pyr2.append(downscale ( *pyr2[-1] ))
 
-plt.imshow(res_img)
-plt.colorbar()
-plt.show()
+
+sp = [0,0,0,0,0,0]
+
+for k in range (PYRAMID_LEVELS, 0, -1):
+    [Id1,Dd1,Kd1] = pyr1[k]
+    [Id2,Dd2,Kd2] = pyr2[k]
+    for i in range (0,5):
+        r = calcErr(Id1, Dd1, Id2, sp, K)
+        J = deriveNumeric(Id1, Dd1, Id2,sp, K)
+        err = np.sum(r)
+        delta_sp = np.linalg.inv(-(np.transpose(J) @ J)) @ np.transpose(J) @ r.reshape(-1,1)
+        sp = se3log (se3exp(delta_sp) @ se3exp(sp))
+        print ("%0.1f"%err)
+    plt.imshow(calcP(c1, d1, c2, sp, K));plt.savefig("/tmp/pc1_pyr%d.png"%(k))
+
+#plt.subplot(121)
+
+plt.imshow(c2);plt.savefig("/tmp/c2.png")
+plt.imshow(c1);plt.savefig("/tmp/c1.png")
+#res_img = calcErr(Id1, Dd1, Id2, [0.1,0,0,0,0,0], K)
+# plt.subplot(121)
+# plt.imshow(Id1)
+# plt.subplot(122)
+# plt.imshow(res_img)
+#plt.colorbar()
+# plt.show()
