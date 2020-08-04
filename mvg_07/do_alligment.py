@@ -54,12 +54,14 @@ def downscale( I, D, K):
     return [Id,Dd,Kd]
 
 def calcErrPoint(I1, D1, I2, xi, K , u, v):
+    R = se3exp(xi)[0:3,0:3]
+    T = se3exp(xi)[0:3,3]
     cx = K[0][2]; cy= K[1][2]
     fx = K[0][0]; fy= K[1][1]
     if D1[int(u)][int(v)] == 0:
         return 0
     p3d_frame1 = np.array([(u - cx) / fx,(v - cy) / fy, 1]) *  D1[int(u)][int(v)]
-    p3d_frame2 = (np.identity(3) + skew (xi)) @ p3d_frame1 + xi[3:]
+    p3d_frame2 = R @ p3d_frame1 + T
     p3d_frame2 = p3d_frame2 / p3d_frame2[2]
     up = (fx * p3d_frame2[0] + cx)
     vp = (fy * p3d_frame2[1] + cy)
@@ -81,10 +83,13 @@ def calcErrPoint(I1, D1, I2, xi, K , u, v):
 def calcPoint(I1, D1, I2, xi, K , u, v):
     cx = K[0][2]; cy= K[1][2]
     fx = K[0][0]; fy= K[1][1]
+    R = se3exp(xi)[0:3,0:3]
+    T = se3exp(xi)[0:3,3]
+
     if D1[int(u)][int(v)] == 0:
         return 0
     p3d_frame1 = np.array([(u - cx) / fx,(v - cy) / fy, 1]) *  D1[int(u)][int(v)]
-    p3d_frame2 = (np.identity(3) + skew (xi)) @ p3d_frame1 + xi[3:]
+    p3d_frame2 = R @ p3d_frame1 + T
     p3d_frame2 = p3d_frame2 / p3d_frame2[2]
     up = (fx * p3d_frame2[0] + cx)
     vp = (fy * p3d_frame2[1] + cy)
@@ -122,19 +127,19 @@ def deriveNumeric(I1, D1, I2, xi, K):
     J = []
     for i in range (0,6):
         e = [0] * 6
-        EPS = 10e-8
+        EPS = 10e-6
         e[i] = EPS
         xi2 = se3log (se3exp(e) @ se3exp(xi))
         #print (xi2, xi)
         err2 = calcErr(I1,D1,I2, xi2, K)
         err1 = calcErr(I1,D1,I2, xi, K)
         d = (err2-err1) / EPS
-        # plt.subplot(2,3,i+1)
-        # plt.imshow(err2)
-        # plt.colorbar()
+        plt.subplot(2,3,i+1)
+        plt.imshow(d)
+        plt.colorbar()
         J.append(d.reshape(-1))
 
-    # plt.show()
+    plt.show()
     return np.transpose(np.stack(J))
 
 K = [[517.3, 0, 318.6],	[0, 516.5, 255.3,], [0, 0, 1]]
@@ -178,7 +183,7 @@ sp = [0,0,0,0,0,0]
 for k in range (PYRAMID_LEVELS, 0, -1):
     [Id1,Dd1,Kd1] = pyr1[k]
     [Id2,Dd2,Kd2] = pyr2[k]
-    for i in range (0,5):
+    for i in range (0,6):
         r = calcErr(Id1, Dd1, Id2, sp, K)
         J = deriveNumeric(Id1, Dd1, Id2,sp, K)
         err = np.sum(r)
