@@ -51,11 +51,12 @@ def downscale( I, D, K):
                 Dd[x][y]  = Dd[x][y]/p
                 Dd[x][y] = 1.0/Dd[x][y] 
     Kd = np.array(K)/2
+    Kd[2][2]=1
     return [Id,Dd,Kd]
 
-def calcErrPoint(I1, D1, I2, xi, K , u, v):
-    R = se3exp(xi)[0:3,0:3]
-    T = se3exp(xi)[0:3,3]
+def calcErrPoint(I1, D1, I2, se3xi, K , u, v):
+    R = se3xi[0:3,0:3]
+    T = se3xi[0:3,3]
     cx = K[0][2]; cy= K[1][2]
     fx = K[0][0]; fy= K[1][1]
     if D1[int(u)][int(v)] == 0:
@@ -80,11 +81,11 @@ def calcErrPoint(I1, D1, I2, xi, K , u, v):
     # n2 = X @ [n1[0],n1[1],n1[2],1]
     return 0
 
-def calcPoint(I1, D1, I2, xi, K , u, v):
+def calcPoint(I1, D1, I2, se3xi, K , u, v):
     cx = K[0][2]; cy= K[1][2]
     fx = K[0][0]; fy= K[1][1]
-    R = se3exp(xi)[0:3,0:3]
-    T = se3exp(xi)[0:3,3]
+    R = se3xi[0:3,0:3]
+    T = se3xi[0:3,3]
 
     if D1[int(u)][int(v)] == 0:
         return 0
@@ -106,9 +107,10 @@ def calcP(I1, D1, I2, xi, K):
     assert (len(xi)==6)
     f_I2 = interpolate.interp2d(np.arange(0,I2.shape[0]), np.arange(0,I2.shape[1]), np.transpose(I2) )
     res_img = np.zeros(I1.shape)
+    se3xi = se3exp(xi)
     for u in range (0,I1.shape[0]):
         for v in range (0,I2.shape[1]):
-            res_img[u][v]=calcPoint(I1, D1, f_I2, xi, K ,u, v)
+            res_img[u][v]=calcPoint(I1, D1, f_I2, se3xi, K ,u, v)
     return res_img
 
 def calcErr(I1, D1, I2, xi, K):
@@ -117,9 +119,10 @@ def calcErr(I1, D1, I2, xi, K):
     assert (len(xi)==6)
     f_I2 = interpolate.interp2d(np.arange(0,I2.shape[0]), np.arange(0,I2.shape[1]), np.transpose(I2) )
     res_img = np.zeros(I1.shape)
+    se3xi = se3exp(xi)
     for u in range (0,I1.shape[0]):
         for v in range (0,I2.shape[1]):
-            res_img[u][v]=calcErrPoint(I1, D1, f_I2, xi, K , u,v)
+            res_img[u][v]=calcErrPoint(I1, D1, f_I2, se3xi, K , u,v)
     return res_img
 
 def deriveNumeric(I1, D1, I2, xi, K):
@@ -134,12 +137,11 @@ def deriveNumeric(I1, D1, I2, xi, K):
         err2 = calcErr(I1,D1,I2, xi2, K)
         err1 = calcErr(I1,D1,I2, xi, K)
         d = (err2-err1) / EPS
-        plt.subplot(2,3,i+1)
-        plt.imshow(d)
-        plt.colorbar()
+        #plt.subplot(2,3,i+1)
+        #plt.imshow(d)
+        #plt.colorbar()
         J.append(d.reshape(-1))
-
-    plt.show()
+    #plt.show()
     return np.transpose(np.stack(J))
 
 K = [[517.3, 0, 318.6],	[0, 516.5, 255.3,], [0, 0, 1]]
@@ -152,21 +154,6 @@ d2 = cv2.imread('depth/1305031102.160407.png', cv2.IMREAD_UNCHANGED)/5000
 #d2 = d2[:,:,1]
 d1 = cv2.imread('depth/1305031102.262886.png', cv2.IMREAD_UNCHANGED)/5000
 #d1 = d1[:,:,1]
-# result:
-# approximately -0.0021    0.0057    0.0374   -0.0292   -0.0183   -0.0009
-
-##
-# K = [ [535.4,  0, 320.1],[0, 539.2, 247.6],[0, 0, 1]]
-# c1 = cv2.imread('rgb/1341847980.722988.png')
-# c2 = cv2.imread('rgb/1341847982.998783.png')
-# #c1 = cv2.cvtColor(c1,cv2.COLOR_BGR2GRAY)
-# #c2 = cv2.cvtColor(c2,cv2.COLOR_BGR2GRAY)
-
-# d1 = cv2.imread('depth/1341847980.723020.png')/5000
-# d2 = cv2.imread('depth/1341847982.998830.png')/5000
-
-# result:
-#  approximately -0.2894 0.0097 -0.0439  0.0039 0.0959 0.0423
 
 PYRAMID_LEVELS = 4
 
@@ -178,19 +165,25 @@ for i in range (PYRAMID_LEVELS):
     pyr2.append(downscale ( *pyr2[-1] ))
 
 
-sp = [0,0,0,0,0,0]
+#sp = [ -0.0292,   -0.0183,   -0.0009, -0.0021,    0.0057,    0.0374]
+sp = [0]*6
+[Id1,Dd1,Kd1] = pyr1[2]
+[Id2,Dd2,Kd2] = pyr2[2]
+#plt.imshow(calcP(Id1, Dd1, Id2, sp, Kd1));plt.savefig("/tmp/gt_init.png")
 
-for k in range (PYRAMID_LEVELS, 0, -1):
-    [Id1,Dd1,Kd1] = pyr1[k]
-    [Id2,Dd2,Kd2] = pyr2[k]
-    for i in range (0,6):
-        r = calcErr(Id1, Dd1, Id2, sp, K)
-        J = deriveNumeric(Id1, Dd1, Id2,sp, K)
-        err = np.sum(r)
-        delta_sp = np.linalg.inv(-(np.transpose(J) @ J)) @ np.transpose(J) @ r.reshape(-1,1)
-        sp = se3log (se3exp(delta_sp) @ se3exp(sp))
-        print ("%0.1f"%err)
-    plt.imshow(calcP(c1, d1, c2, sp, K));plt.savefig("/tmp/pc1_pyr%d.png"%(k))
+with open("/tmp/optim.txt", 'w') as log:
+    for k in range (PYRAMID_LEVELS, 0, -1):
+        [Id1,Dd1,Kd1] = pyr1[k]
+        [Id2,Dd2,Kd2] = pyr2[k]
+        for i in range (0,6):
+            r = calcErr(Id1, Dd1, Id2, sp, Kd1)
+            J = deriveNumeric(Id1, Dd1, Id2,sp, Kd1)
+            err = np.sum(r)
+            delta_sp = np.linalg.inv(-(np.transpose(J) @ J)) @ np.transpose(J) @ r.reshape(-1,1)
+            sp = se3log (se3exp(delta_sp) @ se3exp(sp))
+            print ("%0.1f  %s"%(err, np.around(sp,decimals=4)))
+            log.write("%0.1f  %s\n"%(err, np.around(sp,decimals=4)))
+        plt.imshow(calcP(c1, d1, c2, sp, K));plt.savefig("/tmp/pc1_pyr%d.png"%(k))
 
 #plt.subplot(121)
 
