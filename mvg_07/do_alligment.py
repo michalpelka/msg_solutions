@@ -5,6 +5,9 @@ from mpl_toolkits.mplot3d import Axes3D
 from scipy.linalg import expm, logm
 from scipy import interpolate
 
+DELTA=4
+USE_IRLS=True
+
 def skew(a):
     return np.array (((   0, -a[5],    a[4]),
                       (a[5],    0  ,  -a[3]),
@@ -77,8 +80,16 @@ def calcErrPoint(I1, D1, I2, se3xi, K , u, v):
     if (up > 0 and up < I1.shape[0]):
         if (vp > 0 and vp < I1.shape[1]):
             res = (I1[int(u)][int(v)]-I2(up,vp))
+
+            if not USE_IRLS:
+                return res * res
+
+            if abs(res) <= DELTA:
+                return ( res * res ) / ( 2 * DELTA)
+            else:
+                return abs(res) - (DELTA/2)
+
             #res = I2(up,vp)
-            return res*res
     # n1 = cv2.undistortPoints(np.array([(x,y)]), np.array(K), np.array([0.0]*4))
     # n11 = [(u - cx) / fx,(v - cy) / fy, 1]
     
@@ -252,8 +263,10 @@ twist_estimate = [0] * 6
 # [Id1,Dd1,Kd1] = pyr1[2]
 # [Id2,Dd2,Kd2] = pyr2[2]
 #plt.imshow(calcP(Id1, Dd1, Id2, sp, Kd1));plt.savefig("/tmp/gt_init.png")
-plt.imshow(c2);#plt.savefig("/tmp/c2.png")
-plt.imshow(c1);#plt.savefig("/tmp/c1.png")
+plt.imshow(c2);
+cv2.imwrite("/tmp/c2.png", c2)
+plt.imshow(c1);
+cv2.imwrite("/tmp/c1.png", c1)
 
 with open("/tmp/optim.txt", 'w') as log:
     for k in range (PYRAMID_LEVELS, 0, -1):
@@ -267,15 +280,26 @@ with open("/tmp/optim.txt", 'w') as log:
         plt.imshow(dI2y);#plt.savefig("/tmp/dI2y.png")
 
         for i in range (0,5):
-            #J = deriveNumeric(Id1, Dd1, Id2, twist_estimate, Kd1)
-            J = deriveAnalytic(Id1, Dd1, Id2, twist_estimate, Kd1, dI2x, dI2y)
+            J = deriveNumeric(Id1, Dd1, Id2, twist_estimate, Kd1)
+            #J = deriveAnalytic(Id1, Dd1, Id2, twist_estimate, Kd1, dI2x, dI2y)
             r = getResidualImg(Id1, Dd1, Id2, twist_estimate, Kd1)
             nans=~np.isnan(J).any(axis=1)
             J_trim = J[nans]
             r_trim = r.reshape(-1,1)[nans]
-            
+
+            if USE_IRLS:
+                #print(r_trim > 0)
+                #print(np.count_nonzero(r_trim))
+                w = DELTA / r_trim[:,0]
+                w[r_trim[:,0] <= DELTA] = 1
+                W = np.diag(w)
+                #print(np.count_nonzero(W))
+
             err = np.sum(r)
-            twist_estimate_delta = np.linalg.inv(-(np.transpose(J_trim) @ J_trim)) @ np.transpose(J_trim) @ r_trim
+            if USE_IRLS:
+                twist_estimate_delta = np.linalg.inv(-(np.transpose(J_trim) @ W @ J_trim)) @ np.transpose(J_trim) @ W @ r_trim
+            else:
+                twist_estimate_delta = np.linalg.inv(-(np.transpose(J_trim) @ J_trim)) @ np.transpose(J_trim) @ r_trim
             twist_estimate = se3log (se3exp(twist_estimate_delta) @ se3exp(twist_estimate))
 
             print ("%0.1f  %s" % (err, np.around(twist_estimate, decimals=4)))
@@ -283,5 +307,7 @@ with open("/tmp/optim.txt", 'w') as log:
             plt.imshow(r)
             plt.savefig("/tmp/err_%02d_%02d.png"%(k,i))
 
-        plt.imshow(getTransformedImg(c1, d1, c2, twist_estimate, K));plt.savefig("/tmp/pc1_pyr%d.png" % (k))
+        img = getTransformedImg(c1, d1, c2, twist_estimate, K)
+        plt.imshow(img)
+        cv2.imwrite("/tmp/pc1_pyr%d.png" % (k), img)
         plt.show()
