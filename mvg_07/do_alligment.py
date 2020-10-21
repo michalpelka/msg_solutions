@@ -4,10 +4,21 @@ from matplotlib import pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from scipy.linalg import expm, logm
 from scipy import interpolate
+import enum 
+import os
+Optimizers = enum.Enum("Optimizers",'GRADIENT GAUSS_NEWTON LEVENBERG_MARQUARDT')
 
 DELTA=4
-USE_IRLS=True
-
+USE_IRLS=False
+LR_RATE_INIT = 1e-14
+OPTIMIZER = Optimizers.GRADIENT
+if (OPTIMIZER == Optimizers.GRADIENT):
+    if USE_IRLS :
+        LR_RATE_INIT = 1e-12
+    else:
+        LR_RATE_INIT = 1e-14
+else:
+    LR_RATE_INIT = 1e-7
 def skew(a):
     return np.array (((   0, -a[5],    a[4]),
                       (a[5],    0  ,  -a[3]),
@@ -25,6 +36,12 @@ def se3log(a):
     #lg(1,4) lg(2,4) lg(3,4) lg(3,2) lg(1,3) lg(2,1)
     t = [lg[0,3], lg[1,3], lg[2,3], lg[2,1],lg[0,2], lg[1,0]]
     return t
+
+def getLogDir():
+    fn = "results/"+str(OPTIMIZER)+"_IRLS_%d/"%USE_IRLS
+    if not os.path.exists(fn):
+        os.makedirs(fn)
+    return fn
 
 def downscale( I, D, K):
     h = int(I.shape[0]/2)
@@ -263,12 +280,13 @@ twist_estimate = [0] * 6
 # [Id1,Dd1,Kd1] = pyr1[2]
 # [Id2,Dd2,Kd2] = pyr2[2]
 #plt.imshow(calcP(Id1, Dd1, Id2, sp, Kd1));plt.savefig("/tmp/gt_init.png")
-plt.imshow(c2);
-cv2.imwrite("/tmp/c2.png", c2)
-plt.imshow(c1);
-cv2.imwrite("/tmp/c1.png", c1)
+plt.imshow(c2)
+cv2.imwrite(getLogDir()+"c2.png", c2)
+plt.imshow(c1)
+cv2.imwrite(getLogDir()+"c1.png", c1)
 
-with open("/tmp/optim.txt", 'w') as log:
+
+with open(getLogDir()+"log_optim.txt", 'w') as log:
     for k in range (PYRAMID_LEVELS, 0, -1):
 
         [Id1,Dd1,Kd1] = pyr1[k]
@@ -278,8 +296,9 @@ with open("/tmp/optim.txt", 'w') as log:
         
         plt.imshow(dI2x);#plt.savefig("/tmp/dI2x.png")
         plt.imshow(dI2y);#plt.savefig("/tmp/dI2y.png")
-
-        for i in range (0,5):
+        lr_rate = LR_RATE_INIT
+        non_updated_count =0
+        for i in range (0,25):
             J = deriveNumeric(Id1, Dd1, Id2, twist_estimate, Kd1)
             #J = deriveAnalytic(Id1, Dd1, Id2, twist_estimate, Kd1, dI2x, dI2y)
             r = getResidualImg(Id1, Dd1, Id2, twist_estimate, Kd1)
@@ -296,18 +315,54 @@ with open("/tmp/optim.txt", 'w') as log:
                 #print(np.count_nonzero(W))
 
             err = np.sum(r)
-            if USE_IRLS:
-                twist_estimate_delta = np.linalg.inv(-(np.transpose(J_trim) @ W @ J_trim)) @ np.transpose(J_trim) @ W @ r_trim
-            else:
-                twist_estimate_delta = np.linalg.inv(-(np.transpose(J_trim) @ J_trim)) @ np.transpose(J_trim) @ r_trim
-            twist_estimate = se3log (se3exp(twist_estimate_delta) @ se3exp(twist_estimate))
+            if OPTIMIZER == Optimizers.LEVENBERG_MARQUARDT:
+                current_error = np.sum(r_trim)
+                        #np.diag((np.transpose(J_trim) @ J_trim)
+                if USE_IRLS:
+                    multiplier = np.linalg.inv(np.transpose(J_trim) @ W @ J_trim  + lr_rate * np.diag(np.transpose(J_trim) @ W @ J_trim))
+                    twist_estimate_delta_candidate = - multiplier @ np.transpose(J_trim)@ W @r_trim
+                else:    
+                    multiplier = np.linalg.inv(np.transpose(J_trim) @ J_trim  + lr_rate * np.diag(np.transpose(J_trim) @ J_trim))
+                    twist_estimate_delta_candidate = - multiplier @ np.transpose(J_trim)@r_trim
+
+                twist_estimate_candidate = se3log (se3exp(twist_estimate_delta_candidate) @ se3exp(twist_estimate))
+                r_candidate = getResidualImg(Id1, Dd1, Id2, twist_estimate_candidate, Kd1)
+                r_candidate = r_candidate.reshape(-1,1)
+                nans=~np.isnan(r_candidate).any(axis=1)
+                error_candidate = np.sum(r_candidate[nans])
+                print (lr_rate)
+                if error_candidate < current_error :
+                    non_updated_count =0
+                    lr_rate = .1* lr_rate
+                    twist_estimate_delta = twist_estimate_delta_candidate
+                    twist_estimate = se3log (se3exp(twist_estimate_delta) @ se3exp(twist_estimate))
+                else:
+                    non_updated_count +=1
+                    lr_rate = 10* lr_rate
+                if (lr_rate > 1.0 or non_updated_count > 3):
+                    break
+            elif OPTIMIZER == Optimizers.GAUSS_NEWTON:
+                if USE_IRLS:
+                    twist_estimate_delta = np.linalg.inv(-(np.transpose(J_trim) @ W @ J_trim)) @ np.transpose(J_trim) @ W @ r_trim
+                else:
+                    twist_estimate_delta = np.linalg.inv(-(np.transpose(J_trim) @ J_trim)) @ np.transpose(J_trim) @ r_trim
+                twist_estimate = se3log (se3exp(twist_estimate_delta) @ se3exp(twist_estimate))
+                
+            elif OPTIMIZER == Optimizers.GRADIENT:
+                if USE_IRLS:
+                    twist_estimate_delta = - lr_rate *np.transpose(J_trim)@ W @r_trim
+                else:    
+                    twist_estimate_delta = - lr_rate * np.transpose(J_trim)@r_trim
+                twist_estimate = se3log (se3exp(twist_estimate_delta) @ se3exp(twist_estimate))
 
             print ("%0.1f  %s" % (err, np.around(twist_estimate, decimals=4)))
             log.write("%0.1f  %s\n" % (err, np.around(twist_estimate, decimals=4)))
             plt.imshow(r)
-            plt.savefig("/tmp/err_%02d_%02d.png"%(k,i))
+            plt.savefig(getLogDir()+"/err_%02d_%02d.png"%(k,i))
 
         img = getTransformedImg(c1, d1, c2, twist_estimate, K)
         plt.imshow(img)
-        cv2.imwrite("/tmp/pc1_pyr%d.png" % (k), img)
-        plt.show()
+        cv2.imwrite(getLogDir()+"/pc1_pyr%d.png" % (k), img)
+        log.flush()
+        
+log.close()
